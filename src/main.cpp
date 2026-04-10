@@ -1,7 +1,31 @@
 #include "../inc/main.hpp"
 
-ssize_t	send_user(int socket, const void *buffer, size_t length, int flags)
+std::string trimWhitespace(const std::string &str)
 {
+	std::size_t start = str.find_first_not_of(" \t\r\n");
+	if (start == std::string::npos)
+		return "";
+	std::size_t end = str.find_last_not_of(" \t\r\n");
+	return str.substr(start, end - start + 1);
+}
+
+ssize_t	send_user(int socket, const void *buffer, size_t length, int flags, server *srv)
+{
+    if (srv && srv->tls_enabled && srv->ssl_sessions.count(socket))
+    {
+        SSL *ssl = srv->ssl_sessions[socket];
+        int totalSent = 0;
+        const char *ptr = (const char *)buffer;
+        while (totalSent < static_cast<int>(length))
+        {
+            int ret = SSL_write(ssl, ptr + totalSent, length - totalSent);
+            if (ret <= 0)
+                return -1;
+            totalSent += ret;
+        }
+        return totalSent;
+    }
+
     ssize_t totalSentBytes = 0;
     const char *bufferPtr = (const char*) buffer;
 
@@ -10,7 +34,7 @@ ssize_t	send_user(int socket, const void *buffer, size_t length, int flags)
         ssize_t sentBytes = send(socket, bufferPtr + totalSentBytes, length - totalSentBytes, flags);
         if (sentBytes == -1)
         {
-            return -1; // Return -1 on failure, caller will check errno
+            return -1;
         }
 
         totalSentBytes += sentBytes;
@@ -19,446 +43,158 @@ ssize_t	send_user(int socket, const void *buffer, size_t length, int flags)
     return totalSentBytes;
 }
 
-ssize_t	send_all(server *server, const void *buffer, size_t lenght, int flags, std::string channel)
+ssize_t	send_all(server *server, const void *buffer, size_t length, int flags, const std::string &channel)
 {
 	ssize_t totalSentBytes = 0;
 
 	for (std::size_t j = 0; j < server->channels[channel]->users.size(); j++)
 	{
-		totalSentBytes += send_user(server->channels[channel]->users[j].getSocket(), buffer, lenght, flags);
+		totalSentBytes += send_user(server->channels[channel]->users[j].getSocket(), buffer, length, flags, server);
 	}
 	return (totalSentBytes);
 }
 
-void	get_new_user(server *server, std::vector<pollfd> &fds)
+static void accept_new_client(server *srv)
 {
-    int newClientSocket = accept(server->socket_id, NULL, NULL);
+    int newClientSocket = accept(srv->socket_id, NULL, NULL);
     if (newClientSocket == -1)
     {
-        std::cerr << "Can't accept client!";
+        if (errno != EAGAIN && errno != EWOULDBLOCK)
+            std::cerr << "Can't accept client!" << std::endl;
         return;
     }
-    user newUser(newClientSocket);
-    server->users[newClientSocket] = newUser;
-    pollfd newPfd;
-    newPfd.fd = newClientSocket;
-    newPfd.events = POLLIN;
-    fds.push_back(newPfd);
-    fds[0].revents = 0;
-    send_user(newPfd.fd, "Welcome to the server!\n", 23, 0);
-	send_user(newPfd.fd, "Please enter the server password: /PASS <password>\r\n", 52, 0);
-}
-
-int	check_valid(std::string buffer)
-{
-	if(buffer.empty())
-	{
-		std::cout << "error 1\n";
-		return (1);
-	}
-	return (0);
-}
-
-void    get_username(char *buf, int fd, server *server)
-{
-    std::string buffer(buf);
-	std::cout << "buffer = " << buffer << std::endl;
-    if (buffer.find("USER") != std::string::npos && (buffer.find("USER") == 0 || buffer[buffer.find("USER") - 1] == '\n'))
+    if (srv->users.size() >= MAX_CLIENTS)
     {
-        if (server->users[fd].getUsername().empty()) {
-            std::string username = buffer.substr(buffer.find("USER") + 5);
-			if(check_valid(username) == 1)
-			{
-				send_user(fd, "Please enter a valid username: USER <username>\n", 47, 0);
-				return ;
-			}
-			while(username[username.size() - 1] == ' ' || username[username.size() - 1] == '\t')
-				username = username.substr(0, username.size() - 1);
-			while(username[0] == ' ' || username[0] == '\t')
-				username = username.substr(1);
-            std::size_t endPos = username.find_first_of("\r\n");
-            if (endPos != std::string::npos)
-                username = username.substr(0, endPos);
-			username = username.substr(0, username.find(" "));
-            server->users[fd].setUsername(username);
-            std::cout << "Username set to: |" << username << "|\n";
-            server->users[fd].setStatus(2);
-            std::cout << "status = " << server->users[fd].getStatus() << "\n";
-        }
-        else
-            send_user(fd, "You may not reregister\n", 23, 0);
+        std::string msg = "Server is full, try again later\r\n";
+        send(newClientSocket, msg.c_str(), msg.size(), 0);
+        close(newClientSocket);
+        return;
     }
-    else if(server->users[fd].getUsername().empty())
-        send_user(fd, "Please enter your username: USER <username>\n", 45, 0);
-}
+    int flags = fcntl(newClientSocket, F_GETFL, 0);
+    fcntl(newClientSocket, F_SETFL, flags | O_NONBLOCK);
 
-void    get_username_hex(char *buf, int fd, server *server)
-{
-	std::string buffer(buf);
-	std::cout << "buffer = " << buffer << std::endl;
-	if (buffer.find("USER") != std::string::npos && (buffer.find("USER") == 0 || buffer[buffer.find("USER") - 1] == '\n'))
-	{
-		if (server->users[fd].getUsername().empty()) {
-			std::string username = buffer.substr(buffer.find("USER") + 5);
-			username = username.substr(0, username.find("* :realname") - 2);
-			while(username[username.size() - 1] == ' ' || username[username.size() - 1] == '\t')
-				username = username.substr(0, username.size() - 1);
-			std::size_t endPos = username.find_first_of("\r\n");
-			if (endPos != std::string::npos)
-				username = username.substr(0, endPos);
-			username = username.substr(0, username.find(" "));
-			server->users[fd].setUsername(username);
-			std::cout << "Username set to: |" << username << "|\n";
-			server->users[fd].setStatus(1);
-			std::cout << "status = " << server->users[fd].getStatus() << "\n";
-		}
-		else
-			send_user(fd, "You may not reregister\r\n", 23, 0);
-	}
-}
-
-void    get_nickname_hex(char *buf, int fd, server *server)
-{
-	std::string buffer(buf);
-	if (buffer.find("NICK") != std::string::npos && (buffer.find("NICK") == 0 || buffer[buffer.find("NICK") - 1] == '\n'))
-	{
-		std::string oldNick = server->users[fd].getNickname();
-		std::string nick = buffer.substr(buffer.find("NICK") + 5);
-		while(nick[nick.size() - 1] == ' ' || nick[nick.size() - 1] == '\t')
-			nick = nick.substr(0, nick.size() - 1);
-		std::size_t endPos = nick.find_first_of("\r\n");
-		if (endPos != std::string::npos)
-			nick = nick.substr(0, endPos);
-		// cut by the first space
-		nick = nick.substr(0, nick.find(" "));
-
-		if (oldNick.compare(nick) == 0)
-			return ;
-		if (!server->users[fd].getNickname().empty())
-		{
-			server->users[fd].setNickname(nick);
-			std::string message = ":" + oldNick + "!" + server->users[fd].getUsername() + " NICK " + server->users[fd].getNickname() + "\r\n";
-			send_user(fd, message.c_str(), message.size(), 0);
-		}
-		else
-			server->users[fd].setNickname(nick);
-		std::cout << "status = " << server->users[fd].getStatus() << "\n";
-		std::cout << "Nickname set to: |" << nick << "|\n";
-		server->users[fd].setStatus(2);
-		std::cout << "status = " << server->users[fd].getStatus() << "\n";
-	}
-	else if(server->users[fd].getNickname().empty())
-		send_user(fd, "Please enter your nickname: NICK <nickname>\r\n", 45, 0);
-}
-
-void    get_nickname(char *buf, int fd, server *server)
-{
-    std::string buffer(buf);
-    if (buffer.find("NICK") != std::string::npos && (buffer.find("NICK") == 0 || buffer[buffer.find("NICK") - 1] == '\n'))
+    if (srv->tls_enabled)
     {
-        std::string oldNick = server->users[fd].getNickname();
-        std::string nick = buffer.substr(buffer.find("NICK") + 5);
-		if(check_valid(nick) == 1)
-		{
-			send_user(fd, "Please enter a valid nickname: NICK <nickname>\n", 47, 0);
-			return ;
-		}
-		while(nick[nick.size() - 1] == ' ' || nick[nick.size() - 1] == '\t')
-			nick = nick.substr(0, nick.size() - 1);
-		while(nick[0] == ' ' || nick[0] == '\t')
-			nick = nick.substr(1);
-        std::size_t endPos = nick.find_first_of("\r\n");
-        if (endPos != std::string::npos)
-            nick = nick.substr(0, endPos);
-		nick = nick.substr(0, nick.find(" "));
-        if (oldNick.compare(nick) == 0)
-            return ;
-        if (!server->users[fd].getNickname().empty())
+        // Temporarily set blocking for SSL handshake
+        fcntl(newClientSocket, F_SETFL, flags & ~O_NONBLOCK);
+        SSL *ssl = SSL_new(srv->ssl_ctx);
+        SSL_set_fd(ssl, newClientSocket);
+        int ret = SSL_accept(ssl);
+        if (ret <= 0)
         {
-            server->users[fd].setNickname(nick);
-            std::string message = ":" + oldNick + "!" + server->users[fd].getUsername() + " NICK :" + server->users[fd].getNickname() + "\r\n";
-            send_user(fd, message.c_str(), message.size(), 0);
-        }
-        else
-            server->users[fd].setNickname(nick);
-        std::cout << "status = " << server->users[fd].getStatus() << "\n";
-        std::cout << "Nickname set to: |" << nick << "|\n";
-        server->users[fd].setStatus(3);
-    }
-    else if(server->users[fd].getNickname().empty())
-        send_user(fd, "Please enter your nickname: NICK <nickname>\n", 45, 0);
-}
-
-void    get_password(char *buf, int fd, server *server)
-{
-    std::string buffer(buf);
-    if (buffer.find("/PASS") != std::string::npos && (buffer.find("/PASS") == 0 || buffer[buffer.find("/PASS") - 1] == '\n'))
-    {
-        std::string pass = buffer.substr(buffer.find("/PASS") + 6);
-		if(check_valid(pass) == 1)
-		{
-			send_user(fd, "Please enter a valid password: /PASS <password>\n", 48, 0);
-			return ;
-		}
-        std::size_t endPos = pass.find_first_of("\r\n");
-        if (endPos != std::string::npos)
-            pass = pass.substr(0, endPos);
-        if (pass != server->getPass())
-        {
-            std::cout << server->getPass() << std::endl;
-            std::cout << pass << std::endl;
-            send_user(fd, "You've entered the wrong password, please try again\n", 53, 0);
-            return ;
-        }
-        else
-        {
-            server->users[fd].setStatus(1);
-            return ;
-        }
-    }
-    else if(server->users[fd].getStatus() == 0)
-        send_user(fd, "Please enter the server password: /PASS <password>\n", 52, 0);
-}
-
-void check_channel(char *buf, int fd, server *server)
-{
-    std::string buffer(buf), message;
-    if (buffer.find("JOIN") != std::string::npos && (buffer.find("JOIN") == 0 || buffer[buffer.find("JOIN") - 1] == '\n')) {
-        std::string username = server->users[fd].getUsername();
-        std::string nick = server->users[fd].getNickname();
-        std::string channelName = buffer.substr(buffer.find("JOIN") + 5);
-        std::size_t endPos = channelName.find_first_of("\t\n\r ");
-        if (endPos != std::string::npos)
-            channelName = channelName.substr(0, endPos);
-        if (server->channels.find(channelName) == server->channels.end()) {
-            server->channels[channelName] = new channel();
-            server->channels[channelName]->users[fd] = server->users[fd];
-			server->channels[channelName]->users[fd].setOpStatus(true);
-			message = ":" + nick + "!" + username + " JOIN " + channelName + "\r\n";
-        }
-		/* else if (server->channels[channelName]->getMaxUsers() < (int)server->channels[channelName]->users.size()
-		&& server->channels[channelName]->getMaxUsers() > 0)
-			message = ":" + channelName + " :Cannot join channel (+l)\r\n";
-        else
-		{
-            server->channels[channelName]->users[fd] = server->users[fd];
-			message = ":" + nick + "!" + username + " JOIN " + channelName + "\r\n";
-		}
-        send_user(fd, message.c_str(), message.size(), 0); */
-        else if (server->channels[channelName]->getInviteMode() == true) {
-            std::string message = ": 473 " + nick + " " + channelName + " :Cannot join channel (+i)\r\n";
-            send_user(fd, message.c_str(), message.size(), 0);
+            std::cerr << "SSL handshake failed for fd " << newClientSocket << std::endl;
+            ERR_print_errors_fp(stderr);
+            SSL_free(ssl);
+            close(newClientSocket);
             return;
-        } else
-            server->channels[channelName]->users[fd] = server->users[fd];
-        //:nick1!user2@F456A.75198A.60D2B2.ADA236.IP JOIN #teste * :realname
-        std::string message = ":" + nick + "!" + username + " JOIN " + channelName + "\r\n";
-        send_all(server, message.c_str(), message.size(), 0, channelName);
-        if (server->channels[channelName]->getTopic().empty() == false) {
-            std::string message = ":" + channelName + " 332 " + nick + " " + channelName + " :" + server->channels[channelName]->getTopic() + "\r\n";
-            send_user(fd, message.c_str(), message.size(), 0);
-            message = ":" + channelName + " 333 " + nick + " " + channelName + " " + server->channels[channelName]->getNick() + "!" + server->channels[channelName]->getUser() +
-                      " 1715866598\r\n";
-            send_user(fd, message.c_str(), message.size(), 0);
         }
+        fcntl(newClientSocket, F_SETFL, flags | O_NONBLOCK);
+        srv->ssl_sessions[newClientSocket] = ssl;
     }
+
+    user newUser(newClientSocket);
+    srv->users[newClientSocket] = newUser;
+    srv->recv_buffers[newClientSocket] = "";
+    srv->addToEpoll(newClientSocket);
+    std::string welcome = "Welcome to the server!\r\nPlease enter the server password: /PASS <password>\r\n";
+    send_user(newClientSocket, welcome.c_str(), welcome.size(), 0, srv);
 }
 
-void    get_password_hex(char *buf, int fd, server *server)
+static void disconnect_client(int fd, server *srv)
 {
-	std::string buffer(buf);
-	if (buffer.find("PASS") != std::string::npos && (buffer.find("PASS") == 0 || buffer[buffer.find("PASS") - 1] == '\n'))
-	{
-		std::string pass = buffer.substr(buffer.find("PASS") + 5);
-		if(check_valid(pass) == 1)
-		{
-			send_user(fd, "Please enter a valid password: PASS <password>\r\n", 50	, 0);
-			return ;
-		}
-		std::size_t endPos = pass.find_first_of("\r\n");
-		if (endPos != std::string::npos)
-			pass = pass.substr(0, endPos);
-		if (pass != server->getPass())
-		{
-			std::cout << server->getPass() << std::endl;
-			std::cout << pass << std::endl;
-			send_user(fd, "You've entered the wrong password, please try again\r\n", 55, 0);
-			return ;
-		}
-		else
-		{
-			server->users[fd].setStatus(3);
-			return ;
-		}
-	}
-	else if(buffer.find("CAP LS") != std::string::npos)
-	{
-		return ;
-	}
-	else
-		send_user(fd, "Please enter the server password: /PASS <password>\r\n", 54, 0);
-}
-
-void check_priv(char *buf, int fd, server *server)
-{
-    std::string buffer(buf);
-    if (buffer.find("PRIVMSG") != std::string::npos && (buffer.find("PRIVMSG") == 0 || buffer[buffer.find("PRIVMSG") - 1] == '\n')) {
-        std::string nick = server->users[fd].getNickname();
-        std::string username = server->users[fd].getUsername();
-        std::size_t channelEndPos = buffer.find(" ", buffer.find("PRIVMSG") + 8);
-        std::string channel = buffer.substr(buffer.find("PRIVMSG") + 8, channelEndPos - (buffer.find("PRIVMSG") + 8));
-
-        if (channel.at(0) == '#') {
-            if (server->channels.find(channel) == server->channels.end()) {
-                std::string message = ":Channel does not exist\r\n";
-                send_user(fd, message.c_str(), message.size(), 0);
-                return;
-            }
-            std::size_t messageStartPos = buffer.find(":", channelEndPos);
-            if (messageStartPos != std::string::npos) {
-                std::string receivedMessage = buffer.substr(messageStartPos + 1);
-                receivedMessage.erase(0, receivedMessage.find_first_not_of(' '));
-                receivedMessage.erase(receivedMessage.find_last_not_of(' ') + 1);
-
-                for (std::size_t i = 0; i < server->channels[channel]->users.size(); i++) {
-                    std::string message = ":" + nick + "!" + username + " PRIVMSG " + channel + " :" + receivedMessage + "\r\n";
-                    if (server->channels[channel]->users[i].getSocket() != fd)
-                        send_user(server->channels[channel]->users[i].getSocket(), message.c_str(), message.size(), 0);
-                }
-            }
-        }
-        else {
-            std::size_t messageStartPos = buffer.find(":", channelEndPos);
-            if (messageStartPos != std::string::npos) {
-                std::string receivedMessage = buffer.substr(messageStartPos + 1);
-                receivedMessage.erase(0, receivedMessage.find_first_not_of(' '));
-                receivedMessage.erase(receivedMessage.find_last_not_of(' ') + 1);
-                std::map<int, user>::iterator it;
-                for (it = server->users.begin(); it != server->users.end(); ++it) {
-                    std::string message = ":" + nick + "!" + username + " PRIVMSG " + it->second.getNickname() + " :" + receivedMessage + "\r\n";
-                    if (it->second.getNickname() == channel) {
-                        std::cout << "Sending private message to " << it->second.getNickname() << std::endl;
-                        send_user(it->second.getSocket(), message.c_str(), message.size(), 0);
-                    }
-                }
-            }
-        }
+    std::cout << "Client disconnected (fd " << fd << ")" << std::endl;
+    srv->removeFromEpoll(fd);
+    if (srv->ssl_sessions.count(fd))
+    {
+        SSL_shutdown(srv->ssl_sessions[fd]);
+        SSL_free(srv->ssl_sessions[fd]);
+        srv->ssl_sessions.erase(fd);
     }
-}
-
-void    check_source(int fd, server *server, int ret)
-{
-	if(ret == 0 && (server->users[fd].getNickname().empty() || server->users[fd].getUsername().empty()))
-	{
-		server->users[fd].setFromNc(1);
-	}
-}
-
-void    login(int i, server *server, std::vector<pollfd> &fds, char *buffer)
-{
-	if (server->users[fds[i].fd].getFromNc() == 0 && server->users[fds[i].fd].getStatus() < 3)
-	{
-		std::cout << "if from hex\n";
-		if (server->users[fds[i].fd].getStatus() == 0)
-			get_username_hex(buffer, fds[i].fd, server);
-		if (server->users[fds[i].fd].getStatus() == 1)
-			get_nickname_hex(buffer, fds[i].fd, server);
-		if (server->users[fds[i].fd].getStatus() == 2)
-			get_password_hex(buffer, fds[i].fd, server);
-	}
-	else if (server->users[fds[i].fd].getFromNc() == 1 && server->users[fds[i].fd].getStatus() < 3)
-	{
-		std::cout << "if not from hex\n";
-		if (server->users[fds[i].fd].getStatus() == 0)
-			get_password(buffer, fds[i].fd, server);
-		if (server->users[fds[i].fd].getStatus() == 1)
-			get_username(buffer, fds[i].fd, server);
-		if (server->users[fds[i].fd].getStatus() == 2)
-			get_nickname(buffer, fds[i].fd, server);
-	}
-	if(server->users[fds[i].fd].getStatus() == 3)
-	{
-		send_user(fds[i].fd, "Congratulations, you are now connected to the server!\r\n", 55, 0);
-		server->users[fds[i].fd].setStatus(4);
-	}
+    close(fd);
+    srv->removeUserFromChannels(fd);
+    srv->users.erase(fd);
+    srv->recv_buffers.erase(fd);
 }
 
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
-    if(argc != 3)
+    if(argc != 3 && argc != 5)
     {
-        std::cout << "Error: Proper use is <./ft_irc <port> <password>\n";
+        std::cerr << "Usage: ./ft_irc <port> <password> [<cert.pem> <key.pem>]" << std::endl;
         return (1);
     }
-    server serverT(argv[2]); // Create a server object
-    server *server = &serverT; // Create a pointer to the server object
+    int port = atoi(argv[1]);
+    if (port <= 0 || port > 65535)
+    {
+        std::cerr << "Error: port must be between 1 and 65535" << std::endl;
+        return (1);
+    }
 
-    std::vector<pollfd> fds;
+    const char *certFile = (argc == 5) ? argv[3] : NULL;
+    const char *keyFile  = (argc == 5) ? argv[4] : NULL;
 
-    pollfd serverPfd;
-    serverPfd.fd = server->socket_id; // Use the -> operator to access members of the object pointed to by the pointer
-    serverPfd.events = POLLIN;
-    fds.push_back(serverPfd);
+    server serverT(port, argv[2], certFile, keyFile);
+    server *srv = &serverT;
 
+    struct epoll_event events[MAX_CLIENTS + 1];
     char buffer[BUFFER_SIZE];
 
-    while (true) // Main server loop
+    while (true)
     {
-        int ret = poll(fds.data(), fds.size(), 100); // Wait indefinitely for events
+        int nfds = epoll_wait(srv->epoll_fd, events, MAX_CLIENTS + 1, 100);
 
-		if (ret == -1)
+        if (nfds == -1)
         {
-            std::cerr << "Error in poll(). Quitting" << std::endl;
+            if (errno == EINTR)
+                continue;
+            std::cerr << "Error in epoll_wait(). Quitting" << std::endl;
             break;
         }
 
-        if (fds[0].revents & POLLIN)
-            get_new_user(server, fds);
-
-        //std::cout << "users size = " << users.size() << "fds size = " << fds.size() << std::endl;
-
-        for (size_t i = 1; i < fds.size(); ++i)
+        for (int n = 0; n < nfds; ++n)
         {
-			check_source(fds[i].fd, server, ret);
-			if (fds[i].revents & POLLIN)
+            int fd = events[n].data.fd;
+
+            if (fd == srv->socket_id)
             {
-                std::memset(buffer, 0, BUFFER_SIZE);
+                accept_new_client(srv);
+                continue;
+            }
 
-                int bytesRead = recv(fds[i].fd, buffer, BUFFER_SIZE, 0);
+            if (!(events[n].events & EPOLLIN))
+                continue;
 
-                if (bytesRead == -1)
-                {
-                    std::cerr << "Error in recv(). Quitting" << std::endl;
-                    break;
-                }
+            std::memset(buffer, 0, BUFFER_SIZE);
+            int bytesRead;
+            if (srv->tls_enabled && srv->ssl_sessions.count(fd))
+                bytesRead = SSL_read(srv->ssl_sessions[fd], buffer, BUFFER_SIZE - 1);
+            else
+                bytesRead = recv(fd, buffer, BUFFER_SIZE - 1, 0);
 
-                if (bytesRead == 0)
-                {
-                    std::cout << "Client disconnected" << std::endl;
-                    close(fds[i].fd);
-                    fds.erase(fds.begin() + i);
-                    server->users.erase(fds[i].fd);
-					for (std::map<std::string, channel *>::iterator it = server->channels.begin(); it != server->channels.end(); it++)
-					{
-						for (size_t i = 0; i < it->second->users.size(); i++)
-						{
-							if (it->second->users[i].getSocket() == fds[i].fd)
-							{
-								server->channels.erase(it);
-							}
-						}
-					}
-                    break;
-                }
-				login(i, server, fds, buffer);
-				if(server->users[fds[i].fd].getStatus() == 4)
-				{
-					check_channel(buffer, fds[i].fd, server);
-					check_priv(buffer, fds[i].fd, server);
-					server->users[fds[i].fd].check_operator(buffer, fds[i].fd, server);
-				}
+            if (bytesRead <= 0)
+            {
+                disconnect_client(fd, srv);
+                continue;
+            }
+            buffer[bytesRead] = '\0';
+
+            if (srv->users[fd].isRateLimited())
+            {
+                std::string msg = "ERROR :Flooding detected, slow down\r\n";
+                send_user(fd, msg.c_str(), msg.size(), 0);
+                continue;
+            }
+
+            // Accumulate data in per-client buffer and extract complete messages
+            srv->recv_buffers[fd] += std::string(buffer, bytesRead);
+            std::vector<std::string> messages = extractMessages(srv->recv_buffers[fd]);
+
+            for (std::size_t m = 0; m < messages.size(); ++m)
+            {
+                IRCMessage msg = parseIRCMessage(messages[m]);
+                if (msg.command.empty())
+                    continue;
+                dispatchCommand(srv, fd, msg);
             }
         }
     }

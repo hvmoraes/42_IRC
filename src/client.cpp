@@ -7,23 +7,39 @@
 user::user(int newSocket)
 {
 	isOp = false;
-    clientSize = sizeof(client);
     clientSocket = newSocket;
-    if (clientSocket == -1 )
+    if (clientSocket == -1)
     {
-        std::cerr << "Can't accept client!";
-        exit(EXIT_FAILURE);
+        std::cerr << "Can't accept client!" << std::endl;
+        return;
     }
     status = 0;
 	from_nc = 0;
-    std::cout << "New client connected" << std::endl;
+    msgCount = 0;
+    lastMsgTime = 0;
+    std::cout << "New client connected on fd " << clientSocket << std::endl;
 }
 
 user::~user()
 {
 }
 
-int	user::modeInvite(server *server, std::string channel, std::string flag)
+bool user::isRateLimited()
+{
+    time_t now = time(NULL);
+    if (now - lastMsgTime >= RATE_LIMIT_WINDOW)
+    {
+        msgCount = 1;
+        lastMsgTime = now;
+        return false;
+    }
+    msgCount++;
+    if (msgCount > RATE_LIMIT_MAX_MSGS)
+        return true;
+    return false;
+}
+
+int	user::modeInvite(server *server, const std::string &channel, const std::string &flag)
 {
 	if (flag.compare("+i") == 0 && server->channels[channel]->getInviteMode() == false)
 		server->channels[channel]->setInviteMode(true);
@@ -36,7 +52,7 @@ int	user::modeInvite(server *server, std::string channel, std::string flag)
 	return (0);
 }
 
-int	user::modeTopic(server *server, std::string channel, std::string flag)
+int	user::modeTopic(server *server, const std::string &channel, const std::string &flag)
 {
 	if (flag.compare("+t") == 0 && server->channels[channel]->getTopicMode() == false)
 		server->channels[channel]->setTopicMode(true);
@@ -49,7 +65,7 @@ int	user::modeTopic(server *server, std::string channel, std::string flag)
 	return (0); 
 };
 
-void	user::modeOperator(server *server, user &newOp, std::string channel, std::string flag)
+void	user::modeOperator(server *server, user &newOp, const std::string &channel, const std::string &flag)
 {
 	if (flag.compare("+o") == 0 && newOp.getOpStatus() == false)
 		newOp.setOpStatus(true);
@@ -61,7 +77,7 @@ void	user::modeOperator(server *server, user &newOp, std::string channel, std::s
 	send_all(server, message.c_str(), message.size(), 0, channel);
 }
 
-int	user::modePassword(server *server, std::string channel, std::string flag, std::string key)
+int	user::modePassword(server *server, const std::string &channel, const std::string &flag, const std::string &key)
 {
 	std::string message;
 	if (key.empty())
@@ -79,14 +95,14 @@ int	user::modePassword(server *server, std::string channel, std::string flag, st
 	else if (flag.compare("+k") == 0 || (flag.compare("-k") == 0 && key.compare(server->channels[channel]->getPassword()) != 0))
 	{
 		message = ":" + channel + " :Channel key already set\r\n";
-		send_user(clientSocket, message.c_str(), message.size(), 0);
+		send_user(clientSocket, message.c_str(), message.size(), 0, server);
 		return (1);
 	}
 	send_all(server, message.c_str(), message.size(), 0, channel);
 	return (0);
 }
 
-int	user::modeLimit(server *server, std::string channel, std::string flag, std::string amount)
+int	user::modeLimit(server *server, const std::string &channel, const std::string &flag, const std::string &amount)
 {
 	std::string message;
 	if (flag.compare("+l") == 0 && server->channels[channel]->getMaxUsers() >= 0)
@@ -109,14 +125,14 @@ int	user::modeLimit(server *server, std::string channel, std::string flag, std::
 	return (0);
 }
 
-int	user::modeCheck(server *server, std::string channel, int fd)
+int	user::modeCheck(server *server, const std::string &channel, int fd)
 {
 	if (server->channels.find(channel) == server->channels.end())
 		return (1);
 	if (server->channels[channel]->users[fd].isOp == false)
 	{
 		std::string message = ":" + channel + " 482 " + this->nickname + " " + channel + " :You're not channel operator\r\n";
-		send_user(fd, message.c_str(), message.size(), 0);
+		send_user(fd, message.c_str(), message.size(), 0, server);
 		return (1);
 	}
 	return (0);
@@ -161,7 +177,7 @@ void	user::check_operator(char *buf, int fd, server *server) {
         iss2 >> command >> channel >> flag >> nameOp;
         if (server->channels[channel]->users[fd].isOp == false) {
             std::string message = ":" + channel + " 482 " + this->nickname + " " + channel + " :You're not channel operator\r\n";
-            send_user(fd, message.c_str(), message.size(), 0);
+            send_user(fd, message.c_str(), message.size(), 0, server);
             return;
         }
         std::size_t endPos = nameOp.find_first_of("\t\n\r ");
@@ -176,7 +192,7 @@ void	user::check_operator(char *buf, int fd, server *server) {
                             ":" + this->nickname + "!" + this->username + " KICK " + channel + " " + flag + " :" +
                             this->nickname + "\r\n";
                     for (std::size_t j = 0; j < server->channels[channel]->users.size(); j++) {
-                        send_user(server->channels[channel]->users[j].getSocket(), message.c_str(), message.size(), 0);
+                        send_user(server->channels[channel]->users[j].getSocket(), message.c_str(), message.size(), 0, server);
                     }
                     server->channels[channel]->users.erase(i);
                     break;
@@ -198,20 +214,20 @@ void	user::check_operator(char *buf, int fd, server *server) {
 
         if (!userExists) {
             std::string message = ":" + channel + " 401 " + this->nickname + " " + nameOp + " :No such nick\r\n";
-            send_user(fd, message.c_str(), message.size(), 0);
+            send_user(fd, message.c_str(), message.size(), 0, server);
             return;
         }
 
         if (server->channels.find(channel) == server->channels.end()) {
             std::string message = ":" + channel + " 403 " + this->nickname + " " + channel + " :No such channel\r\n";
-            send_user(fd, message.c_str(), message.size(), 0);
+            send_user(fd, message.c_str(), message.size(), 0, server);
             return;
         }
 
         if (server->channels[channel]->getInviteMode() == true) {
             if (server->channels[channel]->users[fd].isOp == false) {
                 std::string message = ":" + channel + " 482 " + this->nickname + " " + nameOp + " " + channel + " :You're not channel operator\r\n";
-                send_user(fd, message.c_str(), message.size(), 0);
+                send_user(fd, message.c_str(), message.size(), 0, server);
                 return;
             }
         }
@@ -223,7 +239,7 @@ void	user::check_operator(char *buf, int fd, server *server) {
         for (std::size_t i = 0; i < server->channels[channel]->users.size(); i++) {
             if (server->channels[channel]->users[i].getNickname().compare(nameOp) == 0) {
                 std::string message = ":" + channel + " 443 " + this->nickname + " " + nameOp + " " + channel + " :is already on channel\r\n";
-                send_user(fd, message.c_str(), message.size(), 0);
+                send_user(fd, message.c_str(), message.size(), 0, server);
                 return;
             }
         }
@@ -232,9 +248,9 @@ void	user::check_operator(char *buf, int fd, server *server) {
             if (server->users[i].getNickname().compare(nameOp) == 0) {
                 std::string message = ":" + this->nickname + "!" + this->username + " INVITE " + nameOp + " " +
                                       channel + "\r\n";
-                send_user(server->users[i].getSocket(), message.c_str(), message.size(), 0);
+                send_user(server->users[i].getSocket(), message.c_str(), message.size(), 0, server);
                 message = ":" + channel + " 341 " + this->nickname + " " + nameOp + " " + channel + "\r\n";
-                send_user(fd, message.c_str(), message.size(), 0);
+                send_user(fd, message.c_str(), message.size(), 0, server);
                 return;
             }
         }
@@ -255,20 +271,20 @@ void	user::check_operator(char *buf, int fd, server *server) {
         if (topic.empty() == true) {
             if (server->channels[channel]->getTopic().empty() == true) {
                 std::string message = ":" + channel + " 331 " + this->nickname + " " + channel + " :No topic is set.\r\n";
-                send_user(fd, message.c_str(), message.size(), 0);
+                send_user(fd, message.c_str(), message.size(), 0, server);
                 return;
             }
             std::string message = ":" + channel + " 332 " + this->nickname + " " + channel + " :" + server->channels[channel]->getTopic() + "\r\n";
-            send_user(fd, message.c_str(), message.size(), 0);
-            message = ":" + channel + " 333 " + this->nickname + " " + channel + " " + server->channels[channel]->getNick() + "!" + server->channels[channel]->getUser() +
+            send_user(fd, message.c_str(), message.size(), 0, server);
+            message = ":" + channel + " 333 " + this->nickname + " " + channel + " " + server->channels[channel]->getTopicNick() + "!" + server->channels[channel]->getTopicUser() +
                       " 1715866598\r\n";
-            send_user(fd, message.c_str(), message.size(), 0);
+            send_user(fd, message.c_str(), message.size(), 0, server);
             return;
         } else if (server->channels[channel]->getTopicMode() == true) {
             if (server->channels[channel]->users[fd].isOp == false) {
                 std::string message =
                         ":" + channel + " 482 " + this->nickname + " " + channel + " :You're not channel operator\r\n";
-                send_user(fd, message.c_str(), message.size(), 0);
+                send_user(fd, message.c_str(), message.size(), 0, server);
                 return;
             }
         }
@@ -276,7 +292,7 @@ void	user::check_operator(char *buf, int fd, server *server) {
                               "\r\n";
         send_all(server, message.c_str(), message.size(), 0, channel);
         server->channels[channel]->setTopic(topic);
-        server->channels[channel]->setNick(this->nickname);
-        server->channels[channel]->setUser(this->username);
+        server->channels[channel]->setTopicNick(this->nickname);
+        server->channels[channel]->setTopicUser(this->username);
     }
 }

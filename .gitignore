@@ -1,0 +1,15 @@
+# Build artifacts
+ft_irc
+obj/
+*.o
+*.d
+
+# IDE
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

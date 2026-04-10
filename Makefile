@@ -12,6 +12,7 @@ OBJS    =	$(addprefix $(OBJ_DIR)/,$(notdir $(SRCS:.cpp=.o)))
 
 CC			=	c++
 CFLAGS	=	-Wall -Wextra -Werror -I./inc -std=c++98
+LDFLAGS	=	-lssl -lcrypto
 RM			= rm -rf
 
 all:			$(NAME)
@@ -25,7 +26,7 @@ $(OBJ_DIR)/%.o:	src/%.cpp | $(OBJ_DIR)
 $(NAME):	$(OBJS)
 					@clear
 					@echo "$(YELLOW)Compiling ft_irc...$(END)"
-					@$(CC) $(OBJS) $(CFLAGS) -o $(NAME)
+					@$(CC) $(OBJS) $(CFLAGS) $(LDFLAGS) -o $(NAME)
 
 $(OBJ_DIR):
 					@mkdir -p $(OBJ_DIR)

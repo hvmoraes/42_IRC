@@ -6,45 +6,41 @@
 
 #include "server.hpp"
 
-#define BUFFER_SIZE 4096
 class server;
 
 class user
 {
     public:
         user(int newSocket);
-        user() : clientSocket(-1) {}
+        user() : clientSocket(-1), status(0), from_nc(0), isOp(false), msgCount(0), lastMsgTime(0) {}
         ~user();
         int clientSocket;
-        std::string getNickname() { return nickname; }
-        std::string getUsername() { return username; }
-        int getOpStatus() { return isOp; }
-        int getSocket() { return clientSocket; }
-        void setNickname(std::string newNickname) { nickname = newNickname; }
-        void setUsername(std::string newUsername) { username = newUsername; }
+        std::string getNickname() const { return nickname; }
+        std::string getUsername() const { return username; }
+        bool getOpStatus() const { return isOp; }
+        int getSocket() const { return clientSocket; }
+        void setNickname(const std::string &newNickname) { nickname = newNickname; }
+        void setUsername(const std::string &newUsername) { username = newUsername; }
         void setStatus(int newStatus) { status = newStatus; }
-        int getStatus() { return status; }
+        int getStatus() const { return status; }
 		void setFromNc(int newFromnc) { from_nc = newFromnc; }
-		int getFromNc() { return from_nc; }
-        void setOpStatus(bool status) { isOp = status; }
+		int getFromNc() const { return from_nc; }
+        void setOpStatus(bool newStatus) { isOp = newStatus; }
+        bool isRateLimited();
 		void	check_operator(char *buf, int fd, server *server);
-		void	modeOperator(server *server, user &newOp, std::string flag, std::string channel);
-		int		modeInvite(server *server, std::string flag, std::string channel);
-		int		modeTopic(server *server, std::string flag, std::string channel);
+		void	modeOperator(server *server, user &newOp, const std::string &channel, const std::string &flag);
+		int		modeInvite(server *server, const std::string &channel, const std::string &flag);
+		int		modeTopic(server *server, const std::string &channel, const std::string &flag);
 		void	mode(server *server, char *buffer, int fd);
-		int		modeCheck(server *server, std::string channel, int fd);
-		int		modePassword(server *server, std::string channel, std::string flag, std::string key);
-		int		modeLimit(server *server, std::string channel, std::string flag, std::string amount);
+		int		modeCheck(server *server, const std::string &channel, int fd);
+		int		modePassword(server *server, const std::string &channel, const std::string &flag, const std::string &key);
+		int		modeLimit(server *server, const std::string &channel, const std::string &flag, const std::string &amount);
     protected:
         int status;
 		int from_nc;
-        int socket_id;
-        sockaddr_in IP;
-        char buffer[BUFFER_SIZE];
-        int bytesRead;
-        sockaddr_in client;
-        socklen_t clientSize;
         std::string nickname;
         std::string username;
 		bool	isOp;
+        int msgCount;
+        time_t lastMsgTime;
 };

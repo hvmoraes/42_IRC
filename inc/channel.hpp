@@ -14,20 +14,20 @@ class channel {
 	public:
 		channel();
 		~channel();
-		bool		getTopicMode(void){return(topicMode);}
-		bool		getInviteMode(void){return(inviteMode);}
-		std::string	getPassword(void){return(passwd);}
-		int			getMaxUsers(void){return(maxUsers);}
+		bool		getTopicMode(void) const {return(topicMode);}
+		bool		getInviteMode(void) const {return(inviteMode);}
+		std::string	getPassword(void) const {return(passwd);}
+		int			getMaxUsers(void) const {return(maxUsers);}
 		void		setTopicMode(bool status){topicMode = status;}
 		void		setInviteMode(bool status){inviteMode = status;}
-		void		setPassword(std::string pass){passwd = pass;}
+		void		setPassword(const std::string &pass){passwd = pass;}
 		void		setmaxUsers(int n){maxUsers = n;}
-        std::string	getTopic(void){return(topic);}
-        std::string	getUser(void){return(user);}
-        std::string	getNick(void){return(nick);}
-        void		setTopic(std::string top){topic = top;}
-        void        setUser(std::string us){user = us;}
-        void        setNick(std::string ni){nick = ni;}
+        std::string	getTopic(void) const {return(topic);}
+        std::string	getTopicUser(void) const {return(topicSetBy);}
+        std::string	getTopicNick(void) const {return(topicNick);}
+        void		setTopic(const std::string &top){topic = top;}
+        void        setTopicUser(const std::string &us){topicSetBy = us;}
+        void        setTopicNick(const std::string &ni){topicNick = ni;}
 		std::map<int, user> users;
 
 	private:
@@ -36,6 +36,6 @@ class channel {
 		int			maxUsers;
 		std::string	passwd;
         std::string topic;
-        std::string user;
-        std::string nick;
+        std::string topicSetBy;
+        std::string topicNick;
 };
